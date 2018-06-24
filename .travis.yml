@@ -1,0 +1,110 @@
+language: c
+
+os: linux
+sudo: false
+
+addons:
+  apt:
+    packages:
+      - gcc-avr
+      - avr-libc
+
+matrix:
+  include:
+    # Firmware
+    - env: HARDWARE_LIB=vusb HARDWARE_VARIANT=KINESIS    BUILD_NAME=kinesis
+      stage: firmware
+    - env: HARDWARE_LIB=vusb HARDWARE_VARIANT=KINESIS110 BUILD_NAME=kinesis110
+      stage: firmware
+    - env: HARDWARE_LIB=lufa HARDWARE_VARIANT=ERGODOX    HAS_EXTERNAL_STORAGE=1 BUILD_NAME=ergodox-storage
+      stage: firmware
+    - env: HARDWARE_LIB=lufa HARDWARE_VARIANT=ERGODOX    HAS_EXTERNAL_STORAGE=0 BUILD_NAME=ergodox-nostorage
+      stage: firmware
+
+    # GUI client
+    - stage: client
+      os: osx
+      script:
+        - brew install qt5 ghc cabal-install
+        - cabal update
+        - export QT5=/usr/local/opt/qt5
+
+        # Haskell compiler
+        - cd $BUILD_ROOT/compiler
+        - cabal install --only-dependencies
+        - cabal configure
+        - cabal build
+
+        # Qt client
+        - cd $BUILD_ROOT/qtclient
+        - ./integrate-compiler.sh > compiler.pri
+        - $QT5/bin/qmake USE_COMPILER=1
+        - make
+        - $QT5/bin/macdeployqt KeyboardClient.app -dmg
+        - mv KeyboardClient.dmg $out/
+
+    - stage: client
+      os: linux
+      dist: trusty
+      language: cpp
+      compiler: gcc
+      sudo: require
+
+      before_install:
+        - sudo add-apt-repository ppa:beineri/opt-qt593-trusty -y
+        - sudo add-apt-repository ppa:hvr/ghc -y
+        # sudo add-apt-repository ppa:jonathonf/ghc-8.0.2
+        - sudo apt-get update -qq
+
+      install:
+        - sudo apt-get -y install qt59base libusb-1.0-0-dev ghc-8.0.2 cabal-install-1.24 # ghc cabal-install
+        - source /opt/qt*/bin/qt*-env.sh
+        - export PATH="$PATH:/opt/cabal/bin:/opt/ghc/bin"
+        - cabal update
+
+      script:
+        # Haskell compiler
+        - cd $BUILD_ROOT/compiler
+        - cabal install --only-dependencies
+        - cabal configure
+        - cabal build
+
+        # Qt client
+        - cd $BUILD_ROOT/qtclient
+        - GHC=/opt/ghc/8.0.2 ./integrate-compiler.sh > compiler.pri
+
+        - qmake USE_COMPILER=1 CONFIG+=release PREFIX=/usr
+        - make -j$(nproc)
+        - make INSTALL_ROOT=appdir -j$(nproc) install
+
+        - wget -c -nv "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
+        - chmod a+x linuxdeployqt-continuous-x86_64.AppImage
+        - unset QTDIR; unset QT_PLUGIN_PATH ; unset LD_LIBRARY_PATH
+        - export VERSION=$(git rev-parse --short HEAD) # linuxdeployqt uses this for naming the file
+        - ./linuxdeployqt-continuous-x86_64.AppImage appdir/usr/share/applications/*.desktop -bundle-non-qt-libs -no-translations -appimage
+
+        - mv KeyboardClient*.AppImage $out/
+
+
+before_script:
+  - export BUILD_ROOT=$PWD
+  - export out=$BUILD_ROOT/out
+  - mkdir -p $out
+
+script:
+  - make -f Makefile.${HARDWARE_LIB}
+  - for result in *.{elf,hex}; do cp $result $out/${BUILD_NAME}.${result##*.}; done
+
+before_deploy:
+  - cd $BUILD_ROOT
+
+deploy:
+  provider: releases
+  api_key:
+    secure: jRigiz5bHjjXZWvJe+LEJ63uNYt2FMy+LzPn6VXxLD4EU80MjYswteR1yVEiY2sBPcHWOaa4Sl+xrRw8pfTIksstzr2bhWiv1BKd+oqOJpYP+aOQ6bPgnCyX6ejNqO13PcBllJ2u0HS3fnghpiDzgmgAA6vBbVQ2DdwLCpL0HOCaSGTxnlGfRiN2h5CdQu+gRe84pELq3ixNelm/0WaoApLNPuH5jcujoOLpVB8ZsQwxZ92/G+oeV8E5URktwuizmtMFL3tHhOwP7UwqG2lDywfSrtd2ZR/GdNB1d5Rx804F9U6t3AT1zT7fXuVrTjQ8DUwR6D6yxlIjX2r1B2ugfYl5sVXD3GHfv9l2FNBW7m+9Uhb94DKoA2ZXcHV2OYmFzcE41dX59Utnx6XmK8Vfxw1wXc3Z6SANBLUO9RZ75bvMEkS/ezMHz6zv2ow9nD5bhLTc4yHJt8CSbQqNNQuCKqTNvYxiJi2dF5RzV6gNpgIl3HQJX+eJMpQkjtb0H6IKsUNKksaLu7LHQ2lbTeWRIIQAY1bSr35pyeTDxDO1uVgPePIFxilh8gYXkxGFhSVU6hzwTGYqRWqMSIAyH8G02XNAKHGpGKvPMTGbGXiXnvGA463bHyA3ovuxhQh6LDuATUd7RrAWLf9HtfAmhoZSmxyhIJZwcn9KNzN11VMfOaI=
+  skip_cleanup: true
+  file_glob: true
+  file: out/*
+  on:
+    tags: true
+    repo: chrisandreae/keyboard-firmware
